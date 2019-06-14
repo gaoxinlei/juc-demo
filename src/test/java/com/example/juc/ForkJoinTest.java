@@ -4,12 +4,14 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.RecursiveTask;
+import java.util.concurrent.TimeUnit;
 
 /**
  * fork join test
@@ -122,6 +124,43 @@ public class ForkJoinTest {
         LOGGER.info("最终结果:{}",result.join());
 
     }
+
+    /**
+     * 测试completableFuture的dep同步执行的结果。
+     * 在本方法的whenComplete方法体中断点可以看调用栈。
+     * 在CompletableFuture的uniWhenComplete方法的
+     * if (a == null || (r = a.result) == null || f == null)
+     * 处打断点然后以不同的手速放行一二次，
+     * 可以看到每一次调用uniWhenComplete时source的结果是null还是2.
+     * 结论：真正调用了uniWhenComplete这个关键方法（进而可能执行用户定义的fn）有三处，
+     * 1.一上来执行whenComplete时，因同步无线程池，uniWhenCompleteStage会在if中调一次。
+     * 2.代码1失败时，封装成UniApply再调一次tryFire。
+     * 3.source成功后，postComplete会对栈中每一个Completion进行tryFire。
+     *
+     * 因为本例是同步调用，若为异步，很明显在1处将不会调用，而是在Completion的run方法中调tryFire，进而
+     * 再调uniWhenComplete.
+     *
+     * 若将join移出注释，则一定能看到断点进入whenComplete代码块，但不一定能打印日志。
+     */
+    @Test
+    public void testCompletableFuture(){
+
+        CompletableFuture<Integer> source = CompletableFuture.supplyAsync(()->{
+            try {
+                TimeUnit.SECONDS.sleep(2);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            return 2;
+        });
+
+        source.whenComplete((i,t)->{
+            LOGGER.info("执行结果：{}，异常：{}",i,t);
+        });
+        //等待source结束，则一定会进入上面的方法。
+//        source.join();
+    }
+
 
 
 
