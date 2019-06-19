@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountedCompleter;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -12,6 +13,8 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.RecursiveTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 /**
  * fork join test
@@ -161,7 +164,78 @@ public class ForkJoinTest {
 //        source.join();
     }
 
+    /**
+     * 测试CountedCompleter 道格大神提出的一种应用:
+     * 折半加分治查找的完成.
+     * 案例中的数量级,divide和下面的直接遍历时间已经差不多.再加一个数量级测试没等到跑完.
+     */
+    @Test
+    public void testDivideSearch(){
+        Integer[] array = new Integer[10000000];
+        for(int i = 0; i < array.length; i++){
+            array[i] = i+1;
+        }
+        AtomicReference<Integer> result = new AtomicReference<>();
+        Integer find = new Searcher<>(null, array, result, 0,
+                array.length - 1,this::match).invoke();
+        LOGGER.info("查找结束,任务返回:{},result:{}",find,result.get());
 
+    }
 
+    static class Searcher<E> extends CountedCompleter<E> {
+
+        final E[] array; final AtomicReference<E> result; final int lo, hi;
+        final Function<E,Boolean> matcher;
+
+        Searcher(CountedCompleter<?> p, E[] array, AtomicReference<E> result,
+                 int lo, int hi,Function<E,Boolean> matcher){
+            super(p);
+            this.array = array;
+            this.result = result;
+            this.lo = lo;
+            this.hi = hi;
+            this.matcher = matcher;
+        }
+        @Override
+        public void compute() {
+            int l = this.lo;int h = this.hi;
+            while(result.get() == null && h >= l){
+
+                if(h - l >=2){
+                    int mid = (l + h)>>>1;
+                    addToPendingCount(1);
+                    new Searcher<E>(this,array,result,mid,h,matcher).fork();
+                    h = mid;
+                }else{
+                    E x = array[l];
+                    if(matcher.apply(x) &&  result.compareAndSet(null,x)){
+                        super.quietlyCompleteRoot();
+                    }
+                    break;
+                }
+            }
+            if(null == result.get())
+                tryComplete();
+        }
+
+    }
+
+    private boolean match(Integer x) {
+        return x > 2000000 &&  x%2 ==0 && x%3 == 0 && x%5 ==0 && x %7 ==0;
+    }
+
+    @Test
+    public void testDirectFound(){
+        Integer[] array = new Integer[10000000];
+        for(int i = 0; i < array.length; i++){
+            array[i] = i+1;
+        }
+        for(int i=0;i<array.length;i++){
+            if(match(array[i])){
+                LOGGER.info("查找到结果,索引:{},结果:{}",i,array[i]);
+                break;
+            }
+        }
+    }
 
 }
