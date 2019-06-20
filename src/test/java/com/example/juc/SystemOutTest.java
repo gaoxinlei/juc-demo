@@ -3,6 +3,7 @@ package com.example.juc;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.misc.Contended;
 
 import java.time.LocalDateTime;
 import java.util.concurrent.TimeUnit;
@@ -29,7 +30,12 @@ public class SystemOutTest {
         Thread t2 = new Thread(()->{
             //中间加上一个monitor enter exit 的过程,发生了从主内存刷回来的操作.
             //同步块中并未进行任何对flag的修改.
-            System.out.println();//注释掉,永远打印线程2无标记.
+            System.out.println(holder.flag);//注释掉,永远打印线程2无标记.
+            //前后两次打印都会尝试刷新主内存的值到工作内存,若在第一次刷新时值已被线程1改为true,则第二个
+            //打印会是true,否则第二个打印会是false,但存在第二个打印时线程1才完成设置true的可能.
+            //故仍有可能打印false false 线程2有标记,或false true 线程2有标记.
+            //或false false 线程2无标记
+            System.out.println(holder.flag);
             //同步块退出,flag重新读入,此时可能读取到线程1修改的结果.
             if(holder.flag){
                 System.out.println("线程2有标记");
@@ -97,9 +103,15 @@ public class SystemOutTest {
         LOGGER.info("montior exit后的flag:{}",afterMonitorExit.flag);
     }
 
+    /**
+     * 持有一个布尔值
+     */
     private static class BooleanHolder{
-
+        @Contended
         boolean flag = false;
     }
+
+    
+
 
 }
