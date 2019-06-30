@@ -4,6 +4,8 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountedCompleter;
 import java.util.concurrent.ExecutionException;
@@ -253,8 +255,8 @@ public class ForkJoinTest {
     public void testMapReduce() {
         Integer[] array = {1, 2, 3};
         //方法一.
-        Integer result = new MapRed<>(null, array, (a)->a+2, (a,b)->a+b,  0,array.length).invoke();
-        LOGGER.info("方法一result:{}",result);
+        Integer result = new MapRed<>(null, array, (a) -> a + 2, (a, b) -> a + b, 0, array.length).invoke();
+        LOGGER.info("方法一result:{}", result);
         //方法二.
         result = new MapReducer<>(null, array, (a) -> a + 1
                 , (a, b) -> a + b, 0, array.length, null).invoke();
@@ -265,6 +267,7 @@ public class ForkJoinTest {
 
     /**
      * 第一种map reduce方式,很好理解.
+     *
      * @param <E>
      */
     private class MapRed<E> extends CountedCompleter<E> {
@@ -276,7 +279,7 @@ public class ForkJoinTest {
         E result;
 
         MapRed(CountedCompleter<?> p, E[] array, MyMapper<E> mapper,
-                   MyReducer<E> reducer, int lo, int hi) {
+               MyReducer<E> reducer, int lo, int hi) {
             super(p);
             this.array = array;
             this.mapper = mapper;
@@ -386,11 +389,185 @@ public class ForkJoinTest {
         E apply(E a, E b);
     }
 
+    /**
+     * 测试并行流.
+     */
     @Test
-    public void testParallelStream(){
-        int result = Stream.of(1,2,3,4,5).parallel().map(x -> x + 1).reduce((a, b) -> a + b).get();
-        LOGGER.info("result:{}",result);
+    public void testParallelStream() {
+        int result = Stream.of(1, 2, 3, 4, 5).parallel().map(x -> x + 1).reduce((a, b) -> a + b).get();
+        LOGGER.info("result:{}", result);
     }
 
+    /**
+     * 测试ForkJoinPool初始ctl和config
+     */
+    @Test
+    public void testInitCtlAndConfig() {
+        int parallel = Runtime.getRuntime().availableProcessors();
+        LOGGER.info("并行度:{}", parallel);
+        int fMode = 1 << 16;//FIFO
+        int lMode = 0;//LIFO
+        int mode = fMode;
+        long fifteen = 0xffffL;
+        long aMask = fifteen << 48;//能取前16位.
+        long tMask = fifteen << 32;//能取33-48位.
+
+        int sMask = 0xffff;//SMASK常量,16位取
+
+        //config初值
+        long config = (parallel & sMask) | mode;//10004
+        LOGGER.info("FIFO mode下的config:{}", Long.toHexString(config));
+        long np = (long) -parallel;
+        LOGGER.info("FIFO mode下的np:{}", Long.toHexString(np));
+        long ctlHigh = np << 48 & aMask;
+        long ctlLow = np << 32 & tMask;
+        LOGGER.info("FIFO mode 下的高低ctl:{},{}", Long.toHexString(ctlHigh),
+                Long.toHexString(ctlLow));
+        long ctl = ctlHigh | ctlLow;//fffcfffc00000000
+        LOGGER.info("FIFO mode下的ctl:{}", Long.toHexString(ctl));
+        //addWorker方法中计算的nc
+        long nc = ((aMask & (ctl + (1L << 48))) | (tMask & (ctl + 1L << 32)));
+        LOGGER.info("FIFO mode下新增一个worker后的ctl:{}", Long.toHexString(nc));
+
+        //切换模式
+        mode = lMode;
+        //config初值
+        config = (parallel & sMask) | mode;//4
+        LOGGER.info("LIFO mode下的config:{}", Long.toHexString(config));
+        np = (long) -parallel;
+        LOGGER.info("LIFO mode下的np:{}", Long.toHexString(np));
+        ctlHigh = np << 48 & aMask;
+        ctlLow = np << 32 & tMask;
+        LOGGER.info("LIFO mode 下的高低ctl:{},{}", Long.toHexString(ctlHigh),
+                Long.toHexString(ctlLow));
+        ctl = ctlHigh | ctlLow;//fffcfffc00000000
+        LOGGER.info("LIFO mode下的ctl:{}", Long.toHexString(ctl));
+        //addWorker方法中计算的nc
+        nc = ((aMask & (ctl + (1L << 48))) | (tMask & (ctl + (1L << 32))));
+        LOGGER.info("LIFO mode下新增一个worker后的ctl:{}", Long.toHexString(nc));
+        //显然二者只有config不同.ctl相同
+    }
+
+    /**
+     * 测试赋值表达式,应当返回false.
+     */
+    @Test
+    public void testExpression() {
+        int a = 6, b = 4;
+        LOGGER.info("result:{}", b == (b = a));
+    }
+
+    /**
+     * 测试随机数在顺序执行runWorker,scan,awaitWork的奇偶.
+     * 原始种子r从1-10发现奇偶性在迭代过程中可能没有准确的规律.
+     */
+    @Test
+    public void testEvenOrOdd() {
+        for (int i = 1; i <= 10; i++) {
+            int r = i, a = r;
+            r ^= r << 13;
+            r ^= r >>> 17;
+            r ^= r << 5;
+            LOGGER.info("初值为:{},runWorker的迭代:{},是否偶数:{}", a, a = r, r % 2 == 0);
+            r ^= r << 1;
+            r ^= r >>> 3;
+            r ^= r << 10;
+            LOGGER.info("初值为:{},scan的迭代:{},是否偶数:{}", a, a = r, r % 2 == 0);
+            r ^= r << 6;
+            r ^= r >>> 21;
+            r ^= r << 7;
+            LOGGER.info("初值为:{},awaitWork的迭代:{},是否偶数:{}", a, r, r % 2 == 0);
+        }
+    }
+
+    /**
+     * 测试runWorker方法中随机数r的迭代.
+     */
+    @Test
+    public void testRunWorkerEvenOrOdd() {
+        List<Integer> changedNumbers = new ArrayList<>();
+        int max = 0;
+        int maxHolder = 0;
+        for (int i = 1; i <= 100; i++) {
+            int r = i, a = r;
+            //迭代十轮.
+            for (int j = 1; j <= 20; j++) {
+                r ^= r << 13;
+                r ^= r >>> 17;
+                r ^= r << 5;
+                if ((a & 1) != (r & 1)) {
+                    LOGGER.info("种子为:{},runWorker第:{}轮的迭代结果:{},出现奇偶改变,由:{}变:{}",
+                            a, j, r, a % 2 == 0, r % 2 == 0);
+                    //1000轮内找到的数break的添加.
+                    changedNumbers.add(i);
+                    max = j > max ? j : max;
+                    maxHolder = j > maxHolder ? i : maxHolder;
+                    break;
+                }
+            }
+        }
+        LOGGER.info("100以内数字,20轮循环内最晚变化在{}轮,数字为:{},发生变化的数共{}个:{}",
+                max, maxHolder, changedNumbers.size(), changedNumbers);
+    }
+
+    /**
+     * 测试ForkJoinPool scan中的随机数r算法迭代.
+     */
+    @Test
+    public void testScanEvenOrOdd() {
+        List<Integer> changedNumbers = new ArrayList<>();
+        int max = 0;
+        int maxHolder = 0;
+        for (int i = 1; i <= 100; i++) {
+            int r = i, a = r;
+            //迭代十轮.
+            for (int j = 1; j <= 20; j++) {
+                r ^= r << 1;
+                r ^= r >>> 3;
+                r ^= r << 10;
+                if ((a & 1) != (r & 1)) {
+                    LOGGER.info("种子为:{},scan第:{}轮的迭代结果:{},出现奇偶改变,由:{}变:{}",
+                            a, j, r, a % 2 == 0, r % 2 == 0);
+                    //1000轮内找到的数break的添加.
+                    changedNumbers.add(i);
+                    max = j > max ? j : max;
+                    maxHolder = j > maxHolder ? i : maxHolder;
+                    break;
+                }
+            }
+        }
+        LOGGER.info("100以内数字,20轮循环内最晚变化在{}轮,数字为:{},发生变化的数共{}个:{}",
+                max, maxHolder, changedNumbers.size(), changedNumbers);
+    }
+
+    /**
+     * 模拟ForkJoinPool的awaitWork方法对随机数i的迭代.
+     */
+    @Test
+    public void testAwaitWorkEvenOrOdd() {
+        List<Integer> changedNumbers = new ArrayList<>();
+        int max = 0;
+        int maxHolder = 0;
+        for (int i = 1; i <= 100; i++) {
+            int r = i, a = r;
+            //迭代十轮.
+            for (int j = 1; j <= 20; j++) {
+                r ^= r << 6;
+                r ^= r >>> 21;
+                r ^= r << 7;
+                if ((a & 1) != (r & 1)) {
+                    LOGGER.info("种子为:{},awaitWork第:{}轮的迭代结果:{},出现奇偶改变,由:{}变:{}",
+                            a, j, r, a % 2 == 0, r % 2 == 0);
+                    //1000轮内找到的数break的添加.
+                    changedNumbers.add(i);
+                    max = j > max ? j : max;
+                    maxHolder = j > maxHolder ? i : maxHolder;
+                    break;
+                }
+            }
+        }
+        LOGGER.info("100以内数字,20轮循环内最晚变化在{}轮,数字为:{},发生变化的数共{}个:{}",
+                max, maxHolder, changedNumbers.size(), changedNumbers);
+    }
 
 }

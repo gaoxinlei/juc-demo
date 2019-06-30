@@ -128,4 +128,14 @@ public class CASTest {
         }
 
     }
+
+    /**
+     * 测试用cas同一值.
+     */
+    @Test
+    public void testCasSameValue(){
+        AtomicInteger value = new AtomicInteger(1);
+        boolean result = value.compareAndSet(1, 1);
+        LOGGER.info("结果:{}",result);//true
+    }
 }
