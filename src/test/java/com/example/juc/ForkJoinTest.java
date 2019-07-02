@@ -4,6 +4,7 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -14,6 +15,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.RecursiveTask;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -569,5 +571,154 @@ public class ForkJoinTest {
         LOGGER.info("100以内数字,20轮循环内最晚变化在{}轮,数字为:{},发生变化的数共{}个:{}",
                 max, maxHolder, changedNumbers.size(), changedNumbers);
     }
+
+    /**
+     * 尝试获取一个线程的随机数r,并判断会不会自行改变.
+     * 尝试先初始化线程的probe,再每隔一秒获取一次,查看是否改变.
+     * 因在ForkJoinPool中对于外部线程尝试压入池内的任务需要尝试建立或寻找WorkQueue,
+     * 而寻找的依据完全是这个probe,故它不应在未进行显式调用诸如ThreadLocalRandom::advanceProbe
+     * 或UNSAFE::putObjectVolatile(Thread.currentThread,PROBE,newValue)的情况下自行改变.
+     */
+    @Test
+    public void testThreadLocalRandom() {
+        //它内部会调用localInit,将当前线程的probe设置为一个初值.
+        ThreadLocalRandom current = ThreadLocalRandom.current();
+        //取当前线程.
+        Thread thread = Thread.currentThread();
+        //取probe值.
+        for (int i = 0; i < 10; i++) {
+            int probe = 0;
+            try {
+                TimeUnit.SECONDS.sleep(1);
+                Field pro = thread.getClass().getDeclaredField("threadLocalRandomProbe");
+                pro.setAccessible(true);
+                probe = (Integer) pro.get(thread);
+            } catch (NoSuchFieldException e) {
+                e.printStackTrace();
+            } catch (IllegalAccessException e) {
+                e.printStackTrace();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            LOGGER.info("currentThread:{}", probe);
+        }
+    }
+
+    /**
+     * 测试一个任务的owner和执行者.
+     * 实测,因为基本上没出现阻塞等令工作线程hang住的情况,没见到主线程抢走任务的情况.
+     */
+    @Test
+    public void testInvokerAndOwner(){
+        ForkedTask task = new ForkedTask(1<<30);
+        //1.直接执行任务.间接用common池.
+//        task.invoke();//这是一种使用common池的办法,而且在日志中没看到外部帮助.
+        //2.显式提交到一个线程池,并join,从而帮助.
+        ForkJoinPool pool = new ForkJoinPool();
+        pool.submit(task);
+        task.join();
+        //3.换成CountedCompleter执行.因为主线程不是ForkJoinWorkerThread而
+        // 会进入ForkJoinPool.externalHelp,进而发现
+        //进入common池中的workQueue是null,主线程无法帮助common池完成任务.
+        ForkedCompleter completer = new ForkedCompleter(1<<30,null);
+//        pool.submit(completer);
+//        completer.helpComplete(5);
+//        completer.join();
+        //4.如果直接使用common池呢?
+        ForkJoinPool.commonPool().submit(completer);
+        completer.helpComplete(5);//会出现main去help的情况
+        //也会出现main进入externalWait->externalHelp->helpComplete的情况
+        //但因为主线程只会尝试先出队unpush,因此只会执行一个.
+        completer.join();
+    }
+
+    private static class ForkedTask extends ForkJoinTask<Integer>{
+
+        private int number;
+        private String owner;
+
+        public ForkedTask(int number){
+            this.number = number;
+            this.owner = Thread.currentThread().getName();
+        }
+
+        @Override
+        public Integer getRawResult() {
+            return null;
+        }
+
+        @Override
+        protected void setRawResult(Integer value) {
+
+        }
+
+        @Override
+        protected boolean exec() {
+            if(number > 1000){
+                ForkedTask subTask = new ForkedTask(number - 1000);
+                subTask.fork();
+                ForkedTask left = new ForkedTask(1000);
+                left.fork();
+            }
+//            if(!this.owner.equals(Thread.currentThread().getName())){
+//                LOGGER.info("线程:{}执行了owner:{}的任务",Thread.currentThread().getName(),this.owner);
+//            }
+            if(Thread.currentThread().getName().contains("main")){
+                LOGGER.info("出现主线程抢夺任务");
+            }
+            return true;
+        }
+    }
+
+    private static class ForkedCompleter extends CountedCompleter<Integer>{
+
+        private int number;
+        private String owner;
+
+        public ForkedCompleter(int number,ForkedCompleter completer){
+            super(completer);
+            this.number = number;
+            this.owner = Thread.currentThread().getName();
+        }
+        @Override
+        public void compute() {
+            if(number > 1000){
+                ForkedCompleter subTask = new ForkedCompleter(number - 1000,this);
+                subTask.fork();
+                ForkedCompleter left = new ForkedCompleter(1000,this);
+                left.compute();
+            }else{
+//                if(!this.owner.equals(Thread.currentThread().getName())){
+//                    LOGGER.info("线程:{}执行了owner:{}的任务",Thread.currentThread().getName(),this.owner);
+//                }
+                if(Thread.currentThread().getName().contains("main")){
+                    LOGGER.info("出现主线程抢夺任务");
+                }
+                tryComplete();
+            }
+        }
+    }
+
+
+    /**
+     * 测试并行流的情况下会出现主线程执行任务的情况.
+     * 经代码debug,发现并不是出现在helpComplete或externalHelp等与get,join有关的方法中.
+     * 而是在并行流分割后,主线程直接分走了一部分任务的执行权,直接去invoke的结果.
+     */
+    @Test
+    public void testParallel(){
+        List<Integer> list = new ArrayList<>(1<<16);
+        for(int i=0;i<1<<16;i++){
+            list.add(i);
+        }
+        list.stream().parallel().forEach(i->{
+            if(Thread.currentThread().getName().contains("main")){
+                LOGGER.warn("主线程抢走了:{}",i);
+            }else{
+                LOGGER.info("线程:{}处理了:{}",Thread.currentThread().getName(),i);
+            }
+        });
+    }
+
 
 }
