@@ -4,6 +4,7 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -38,5 +39,19 @@ public class QueueTest {
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
+    }
+
+    /**
+     * 测试SynchronousQueue的offer和take.
+     * 因为这样offer时,队列会使用transfer方法,同时传入timed为true,nanos为0,则直接会
+     */
+    @Test
+    public void testSynchronousQueueOfferTake() throws InterruptedException {
+        BlockingQueue<Integer> queue = new SynchronousQueue<>();
+        LOGGER.info("offer 1:{}",queue.offer(1));
+        LOGGER.info("offer 2:{}",queue.offer(2));
+        LOGGER.info("offer 3:{}",queue.offer(3));
+        LOGGER.info("take 1:{}",queue.take());
+        LOGGER.info("queue size:{}",queue.size());
     }
 }
