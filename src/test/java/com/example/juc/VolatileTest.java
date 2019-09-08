@@ -4,6 +4,9 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
@@ -138,6 +141,59 @@ public class VolatileTest {
                 }
             }
         }
+    }
+
+    /**
+     * volatile加入内存屏障造成的其他变量的可见性.
+     */
+    @Test
+    public void testVisible() throws InterruptedException {
+        SetGet bean = new SetGet();
+        Thread t1 = new Thread(()->{bean.set();});
+        Thread t2 = new Thread(()->{if(bean.check()) LOGGER.info("可见");});
+        t1.start();
+        t2.start();
+        t2.join();
+        t1.join();
+    }
+
+    private class SetGet{
+        int a;
+        volatile int b;
+
+        void set(){
+            a = 10;
+            b = 5;
+        }
+
+        boolean check(){
+            return (a==0&&b==0)||(a==10&&b==5);
+        }
+    }
+
+
+    @Test
+    public void testSingle() throws Throwable {
+        SingleInt a = this::any;
+        SingleInt b = this::any;
+        LOGGER.info("a==b:{}",a==b);
+//        MethodHandle say = MethodHandles.lookup().findVirtual(a.getClass(),"say",MethodType.methodType(void.class));
+//        say.invoke();
+//        Object g = new Object();
+//        MethodType mt=MethodType.methodType(void.class);
+//        MethodHandle handle = MethodHandles.lookup().findVirtual(g.getClass(), "finalize", mt);
+//        handle.invoke();
+        a.say();
+
+    }
+
+    @FunctionalInterface
+    private interface SingleInt{
+        void say();
+    }
+
+    private void any(){
+        LOGGER.info("say..");
     }
 
 
