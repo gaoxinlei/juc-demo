@@ -20,14 +20,14 @@ public class ConcurrentModifyExceptionTest {
     private static  final Logger LOGGER = LoggerFactory.getLogger(ConcurrentModifyExceptionTest.class);
     private static class Content{
         int id;
-        Content(int id){
+        public Content(int id){
             this.id = id;
         }
     }
 
     private static class Wrapper{
         int id;
-        Wrapper(Content content){
+        public Wrapper(Content content){
             this.id = content.id;
         }
     }

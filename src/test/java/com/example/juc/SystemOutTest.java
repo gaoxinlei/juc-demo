@@ -106,7 +106,7 @@ public class SystemOutTest {
     /**
      * 持有一个布尔值
      */
-    private static class BooleanHolder{
+    private class BooleanHolder{
         @Contended
         boolean flag = false;
     }
